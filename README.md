@@ -1,16 +1,13 @@
 # NGS_Preprocessing_Pipelines
 
-Snakemake Pipelines for Preprocessing of NGS illumina short read data including RNA-seq, miRNA,  Whole Genome Sequencing and Target Capture Exome Sequencing data
+Snakemake pipelines for preprocessing of NGS Illumina short read data including RNA-seq, Whole genome sequencing, exome sequencing and small RNA sequencing data
 
 ## Prerequisites
 
  * Software packages
+   
 
-
- * Reference genome
-
-
- * Databases
+ * Reference genomes
 
 
 
