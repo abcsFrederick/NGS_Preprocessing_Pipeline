@@ -19,18 +19,19 @@ Snakemake pipelines for preprocessing of NGS Illumina short read data including 
 
   *  RNA-seq Pipeline
 
-
+ run_snakemake.sh path/to/unaligned/  RNA  genome_version  paired_or_single_end  subsample_option
 
   *  Whole Genome Sequencing Analysis Pipeline
 
-
+ run_snakemake.sh path/to/unaligned/  gDNA  genome_version  paired_or_single_end  subsample_option
 
   * Exome-Seq Pipeline
 
-
+run_snakemake.sh path/to/unaligned/  Exome  genome_version  paired_or_single_end  subsample_option
 
   * Small RNA Analysis Pipeline
 
+run_snakemake.sh path/to/unaligned/  miRNA  genome_version  subsample_option
 
 ## Contact
 
