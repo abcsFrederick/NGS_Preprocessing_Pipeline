@@ -1,0 +1,199 @@
+#Snakefile for STAR RNA-seq pipeline 
+#CCR-SF IFX 
+#7/7/16
+
+import config
+import program
+import reference
+from snakemake.utils import R
+import glob
+import os
+from os import listdir
+from os.path import isfile, isdir, join
+import os.path as path
+import sys
+
+
+makefilebase = config.analysis + "/fastq/"
+project_name = os.path.basename(config.analysis)
+searchterms = project_name.split("_")
+date = searchterms[-1]
+pi_name = searchterms[0]
+csas = searchterms[2][-5:]
+#print("makefilebase=",makefilebase)
+
+analysis = config.analysis
+unaligned = config.unaligned
+unalignedfolder = "/" + "/".join(unaligned.split("/")[1:len(unaligned.split("/")) - 1])
+run_name = analysis.split('/')[-2]
+flowcell = run_name[-9:]
+one_up = path.abspath(path.join(os.getcwd(),"../"))
+report_result = one_up + "/" + project_name + "_" + flowcell + ".xlsx"
+wreport_result = one_up + "/" + project_name + "_" + flowcell + ".docx"
+
+sample = [os.path.basename(file).split('.')[0] for file in glob.glob(makefilebase+'/*')]
+samps = []
+i=1
+for item in sample:
+        newvar = item.split("_R1")
+        othervar = item.split("_R2")
+        samps.append(newvar[0])
+new = []
+for item in samps:
+        if '_R2_' not in item:
+                new.append(item)
+samples = [s.replace('Sample_', '') for s in new]
+
+
+rule all:
+	input: expand("Sample_{sample}/{sample}_R2_trimmed_screen.png", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_R1_001_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_R2_001_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_RnaSeqMetrics.txt", sample=samples), "RSEM/GeneMat.txt", "RSEM/MainPcaPlot.html", expand("RSEM/{sample}_rsem.genes.results", sample=samples), expand("Sample_{sample}/{sample}_infer_experiment.out", sample=samples), expand("Sample_{sample}/{sample}_read_distribution.out", sample=samples), expand("Sample_{sample}/{sample}.kraken.krona.html", sample=samples), expand("Sample_{sample}/{sample}.inner_distance_plot.pdf", sample=samples), expand("Sample_{sample}/{sample}_infer_experiment.out", sample=samples), expand("Sample_{sample}/{sample}_read_distribution.out", sample=samples), expand("Sample_{sample}/{sample}.kraken.krona.html", sample=samples), expand("Sample_{sample}/{sample}.GC_plot.pdf", sample=samples), expand("Sample_{sample}/{sample}.bam.sorted.markedup.bam", sample=samples), report_result, "multiqc_report.html", expand("Sample_{sample}/{sample}_1p_Log.final.out", sample=samples), expand("Sample_{sample}/{sample}_Log.final.out", sample=samples), wreport_result
+
+
+rule dirs:
+        output: DIRS
+        params: batch = "-l nodes=1:ppn=1"
+        shell:  "mkdir -p "+' '.join(DIRS)
+
+rule trimmo:
+        input: R1 = makefilebase + "{sample}_R1_001.fastq.gz", R2 = makefilebase + "{sample}_R2_001.fastq.gz"
+        output: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq", unpaired_R1 = "Sample_{sample}/{sample}_R1_unpaired.fastq", unpaired_R2 = "Sample_{sample}/{sample}_R2_unpaired.fastq", logname = "Sample_{sample}/logs/{sample}_run_trimmomatic.err"
+        params: batch = "-l nodes=1:ppn=8:sndy", prefix = "Sample_{sample}/logs/" 
+	shell: "java -Xmx64g -jar {program.trimmomatic} PE -threads 8 -phred33  {input.R1} {input.R2} {output.R1} {output.unpaired_R1} {output.R2} {output.unpaired_R2} ILLUMINACLIP:{adapters}:2:36:10 LEADING:10 TRAILING:10 MAXINFO:50:0.97 MINLEN:20 2> {output.logname}" 
+
+rule fastqc:
+	input:  R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq" 
+	output: forward = "Sample_{sample}/{sample}_R1_trimmed_fastqc.html", reverse = "Sample_{sample}/{sample}_R2_trimmed_fastqc.html", logname = "Sample_{sample}/{sample}_run_fastqc.err"
+	params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+        shell:  "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input.R1} {input.R2} 2>{output.logname}"
+
+rule fastqc1:
+	input: R1 = makefilebase + "{sample}_R1_001.fastq.gz", R2 = makefilebase + "{sample}_R2_001.fastq.gz"
+	output: forward = "Sample_{sample}/{sample}_R1_001_fastqc.html", reverse = "Sample_{sample}/{sample}_R2_001_fastqc.html", logname = "Sample_{sample}/{sample}_run_raw_fastqc.err"
+	params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+	shell: "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input.R1} {input.R2} 2>{output.logname}"
+
+rule fastqscreen: 
+	input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq"
+	output: one = "Sample_{sample}/{sample}_R1_trimmed_screen.png", two = "Sample_{sample}/{sample}_R2_trimmed_screen.png", logname = "Sample_{sample}/{sample}_fastq_screen.err"
+	params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+	shell: "module load bowtie2; module load fastq_screen; {program.fastq_screen} --outdir {params.prefix} --threads 8 --nohits --conf {conf} --aligner bowtie2 {input.R1} {input.R2} 2>{output.logname}"
+
+rule seqtk:
+	input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq"
+	output: R1 = "Sample_{sample}/{sample}_R1_trimmed.sub.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.sub.fastq"
+	params: batch = "-l nodes=1:ppn=8"
+	shell: "module load seqtk; seqtk sample -s100 {input.R1} 1000000 >{output.R1} && seqtk sample -s100 {input.R2} 1000000 >{output.R2}"
+	
+rule kraken:
+	input: R1 = "Sample_{sample}/{sample}_R1_trimmed.sub.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.sub.fastq", 
+	output: err = "Sample_{sample}/kraken.err", result = "Sample_{sample}/{sample}.kraken", krona = "Sample_{sample}/{sample}.kraken.krona"
+	params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/{sample}.kraken"
+	shell: "{program.kraken} --fastq-input --threads 8 --db {program.krakendb} --output {params.prefix} --paired {input.R1} {input.R2} 2> {output.err} && cut -f2,3 {output.result} > {output.krona}"
+
+rule krona: 
+	input: "Sample_{sample}/{sample}.kraken.krona"
+	output: out = "Sample_{sample}/{sample}.kraken.krona.html"
+	params: batch = "-l nodes=1:ppn=8"
+	shell: "{program.krona} {input} -c -o {output.out}" 
+
+rule star:
+	input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq"
+	output: file = "Sample_{sample}/{sample}_1p_Aligned.out.bam",  other = "Sample_{sample}/{sample}_1p_Aligned.toTranscriptome.out.bam", final = "Sample_{sample}/{sample}_1p_Log.final.out", sj = "Sample_{sample}/{sample}_1p_SJ.out.tab"
+	params: batch = "-l nodes=1:ppn=8", prefix="Sample_{sample}/{sample}_1p_"
+	shell: "module load star; STAR --genomeDir {reference.star_genome} --outSAMunmapped Within --outFilterType BySJout --outFilterMultimapNmax 20 --outFilterMismatchNmax 999  --outFilterMismatchNoverLmax 0.04  --alignIntronMin 20  --alignIntronMax 1000000  --alignMatesGapMax 1000000  --alignSJoverhangMin 8  --alignSJDBoverhangMin 1  --sjdbScore 1 --readFilesIn {input.R1} {input.R2} --outFileNamePrefix {params.prefix} --runThreadN 16  --outFilterMatchNminOverLread 0.66 --outSAMtype BAM Unsorted --quantMode TranscriptomeSAM"
+
+rule star2p: 
+	input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq", sj = "Sample_{sample}/{sample}_1p_SJ.out.tab"
+	output: file = "Sample_{sample}/{sample}_Aligned.out.bam",  other = "Sample_{sample}/{sample}_Aligned.toTranscriptome.out.bam", final = "Sample_{sample}/{sample}_Log.final.out"
+	params: batch = "-l nodes=1:ppn=8", prefix="Sample_{sample}/{sample}_"
+	shell: "module load star; STAR --genomeDir {reference.star_genome} --outSAMunmapped Within --outFilterType BySJout --outFilterMultimapNmax 20 --outFilterMismatchNmax 999  --outFilterMismatchNoverLmax 0.04  --alignIntronMin 20  --alignIntronMax 1000000  --alignMatesGapMax 1000000  --alignSJoverhangMin 8 --limitSjdbInsertNsj 2500000 --sjdbFileChrStartEnd {input.sj} --alignSJDBoverhangMin 1  --sjdbScore 1 --readFilesIn {input.R1} {input.R2} --outFileNamePrefix {params.prefix} --runThreadN 16  --outFilterMatchNminOverLread 0.66 --outSAMtype BAM Unsorted --quantMode TranscriptomeSAM"
+
+rule sort:
+	input: bam = "Sample_{sample}/{sample}_Aligned.out.bam"
+	output: sort = "Sample_{sample}/{sample}_star.genome.sorted.bam", log = "Sample_{sample}/{sample}.samtools_index.log" 
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "module load samtools; samtools sort {input} -o {output.sort} 2>{output.log}"
+
+rule index: 
+	input: "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: "Sample_{sample}/{sample}_star.genome.sorted.bam.bai", log = "Sample_{sample}/{sample}.samtools_index.log"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "module load samtools; samtools index {input} 2>{output.log}"
+
+rule markdup:
+        input: "Sample_{sample}/{sample}_star.genome.sorted.bam"
+        output: out = "Sample_{sample}/{sample}.bam.sorted.markedup.bam", metric = "Sample_{sample}/{sample}_MARKEDUPmetrics.txt", log = "Sample_{sample}/Markedup.log", err = "Sample_{sample}/Markdup.err"
+        params: batch = "-l nodes=1:ppn=8"
+        shell: "java -Xmx64g -jar {program.markedup} INPUT={input} OUTPUT={output.out} METRICS_FILE={output.metric} ASSUME_SORTED=true MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=1000 VALIDATION_STRINGENCY=LENIENT TMP_DIR=./ 2>{output.log} 1>{output.err}"
+
+rule rnametrics:
+	input: "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: txt = "Sample_{sample}/{sample}_RnaSeqMetrics.txt", chart = "Sample_{sample}/{sample}_nor_pos_vs_coverage.pdf", log = "Sample_{sample}/logs/RnaSeqMetrics.log"
+	params: batch = "-l nodes=1:ppn=8"
+	shell: "java -Xmx64g -jar {program.rnastat} REF_FLAT={reference.refflat_file} INPUT={input} OUTPUT={output.txt} RIBOSOMAL_INTERVALS={reference.rRNA_interval} STRAND_SPECIFICITY=SECOND_READ_TRANSCRIPTION_STRAND VALIDATION_STRINGENCY=LENIENT CHART_OUTPUT={output.chart} TMP_DIR=./ 2>{output.log}" 
+
+rule rsem:
+	input: "Sample_{sample}/{sample}_Aligned.toTranscriptome.out.bam"
+	output: result = "Sample_{sample}/{sample}_rsem.isoforms.results", log = "Sample_{sample}/{sample}.rsem.log", err = "Sample_{sample}/{sample}.rsem.err", plots = "Sample_{sample}/{sample}_rsem.plots.pdf", genes = "Sample_{sample}/{sample}_rsem.genes.results", counts = "RSEM/{sample}_rsem.genes.results"
+	params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/{sample}_rsem"
+	shell: "module load rsem; rsem-calculate-expression --bam --paired-end -p 8 --estimate-rspd {input} {rsem_transcrtiptome} {params.prefix} 2>{output.log} 1>{output.err} && rsem-plot-model {params.prefix} {output.plots} && cp {output.genes} RSEM/"
+
+rule rsemcount:
+    input: files = expand("RSEM/{sample}_rsem.genes.results", sample=samples)
+    output: out = "RSEM/MainPcaPlot.html"
+    params: batch = "-l nodes=1:ppn=8", ffile = expand("{sample}_rsem.genes.results", sample=samples)	
+    shell: "export R_LIBS=/opt/nasapps/applibs/r-3.4.0_libs; /opt/nasapps/development/R/3.4.0/bin/Rscript {program.rsemcounts} '{input.files}'"
+	
+rule matrix: 
+	input: expand("Sample_{sample}/{sample}_rsem.genes.results", sample=samples)
+	output: "RSEM/GeneMat.txt"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "/opt/nasapps/development/rsem/1.2.22/bin/rsem-generate-data-matrix {input} >{output}"
+
+rule innerdistance:
+	input: bam = "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: plot = "Sample_{sample}/{sample}.inner_distance_plot.pdf", err = "Sample_{sample}/{sample}_inner_distance.err"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}"
+	shell: "module load RSeQC; /opt/nasapps/development/RSeQC/2.3.9/bin/inner_distance.py -r {rseqc_file} -i {input.bam} -o {params.prefix} 2>{output.err}"
+
+rule inferexperiment:
+	input: bam = "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: out = "Sample_{sample}/{sample}_infer_experiment.out", err = "Sample_{sample}/{sample}_infer_experiment.err"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}"
+	shell: "module load RSeQC; /opt/nasapps/development/RSeQC/2.3.9/bin/infer_experiment.py -r {reference.rseqc_file} -i {input.bam} >{output.out} 2>{output.err}"
+
+rule readgc:
+	input: bam = "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: plot = "Sample_{sample}/{sample}.GC_plot.pdf", err = "Sample_{sample}/{sample}_GC_content.err"
+ 	params: batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}"
+	shell: "set +u; export PYTHONPATH=/opt/nasapps/development/RSeQC/2.3.9/lib/python2.7/site-packages/:$PYTHONPATH; /opt/nasapps/development/RSeQC/2.3.9/bin/read_GC.py -i {input.bam} -o {params.prefix} 2>{output.err}"
+
+rule readdistribution:
+	input: bam = "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: out = "Sample_{sample}/{sample}_read_distribution.out", err = "Sample_{sample}/{sample}_read_distribution.err"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}"
+	shell: "set +u; export PYTHONPATH=/opt/nasapps/development/RSeQC/2.3.9/lib/python2.7/site-packages/:$PYTHONPATH; /opt/nasapps/development/RSeQC/2.3.9/bin/read_distribution.py -r {reference.rseqc_file} -i {input.bam} >{output.out} 2>{output.err}"
+
+rule junctionsaturation:
+	input: "Sample_{sample}/{sample}_star.genome.sorted.bam"
+	output: plot = "Sample_{sample}/{sample}.junctionSaturation_plot.r", err = "Sample_{sample}/{sample}_junction_saturation.err"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}"
+	shell: "set +u; export PYTHONPATH=/opt/nasapps/development/RSeQC/2.3.9/lib/python2.7/site-packages/:$PYTHONPATH; /opt/nasapps/development/RSeQC/2.3.9/bin/junction_saturation.py -i {input} -r {reference.rseqc_file} -o {params.prefix} 2>{output.err}"
+
+rule multiqc:
+	input: expand("Sample_{sample}/{sample}.inner_distance_plot.pdf", sample=samples), expand("Sample_{sample}/{sample}_read_distribution.out", sample=samples), "RSEM/GeneMat.txt", expand("Sample_{sample}/{sample}_RnaSeqMetrics.txt", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_screen.png", sample=samples)
+	output: "multiqc_report.html" 
+	params: batch = "-l nodes=1:ppn=1"
+	shell: "module load multiqc; multiqc ./ -f"
+
+rule report:
+	input: expand("Sample_{sample}/{sample}.inner_distance_plot.pdf", sample=samples), expand("Sample_{sample}/{sample}.GC_plot.pdf", sample=samples), expand("Sample_{sample}/{sample}_read_distribution.out", sample=samples), "RSEM/GeneMat.txt", expand("Sample_{sample}/{sample}_RnaSeqMetrics.txt", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_screen.png", sample=samples), expand("Sample_{sample}/{sample}_MARKEDUPmetrics.txt", sample=samples)
+	output: report_result
+	params: batch = "-l nodes=1:ppn=1"
+	shell: "cd {one_up}; perl /is2/projects/CCR-SF/active/Software/scripts/bin/run_GenerateAllReports.pl -p {pi_name}+{date}+{csas} -s 2 -u {unaligned} -f {run_name} -d {analysis} -r 5 -e 2 -m 1 -t 1 -x verajc:test1"
+	
+rule wreport:
+	input: report_result
+	output: wreport_result
+	params: batch = "-l nodes=1:ppn=1"
+	shell: "cd {one_up}; /is2/projects/CCR-SF/active/Software/scripts/bin/run_wordreport.py {input}"
