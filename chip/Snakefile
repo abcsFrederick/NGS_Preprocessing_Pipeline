@@ -1,0 +1,199 @@
+#Snakefile for ChIP-seq pipeline 
+#CCR-SF IFX 
+#6/7/17
+
+
+import config
+import program
+import reference
+from snakemake.utils import R
+import glob
+import os.path 
+import os
+import os.path as path
+
+makefilebase = config.analysis + "/fastq/"
+analysis = config.analysis
+project_name = os.path.basename(config.analysis)
+searchterms = project_name.split("_")
+date = searchterms[-1]
+pi_name = searchterms[0]
+csas = searchterms[2][-5:]
+unaligned = config.unaligned
+unalignedfolder = "/" + "/".join(unaligned.split("/")[1:len(unaligned.split("/")) - 1])
+run_name = analysis.split('/')[-2]
+flowcell = run_name[-9:]
+one_up = path.abspath(path.join(os.getcwd(),"../"))
+report_result = one_up + "/" + project_name + "_" + flowcell + ".xlsx"
+wreport_result = one_up + "/" + project_name + "_" + flowcell + ".docx"
+
+paired = config.paired
+sample = [os.path.basename(file).split('.')[0] for file in glob.glob(makefilebase+'/*')]
+samps = []
+i=1
+for item in sample:
+        newvar = item.split("_R1")
+        othervar = item.split("_R2")
+        samps.append(newvar[0])
+new = []
+for item in samps:
+        if '_R2_' not in item:
+                new.append(item)
+samples = [s.replace('Sample_', '') for s in new]
+
+
+rule all:
+	input: expand("Sample_{sample}/{sample}_R1_trimmed_fastqc.html", sample=samples ), expand("Sample_{sample}/{sample}_R1_trimmed_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_R1_001_fastqc.html", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_screen.png", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed.sub.fastq", sample=samples), expand("Sample_{sample}/{sample}.kraken", sample=samples), expand("Sample_{sample}/{sample}.bam", sample=samples), expand("Sample_{sample}/{sample}.kraken.krona.html", sample=samples), expand("Sample_{sample}/{sample}.bam.sorted.bam.bai", sample=samples), expand("Sample_{sample}/{sample}.bam.sorted.markedup.bam", sample=samples), report_result, "multiqc_report.html", wreport_result
+
+if config.paired == "2":
+	rule trimmo:
+		input:  R1 = makefilebase + "{sample}_R1_001.fastq.gz", R2 = makefilebase + "{sample}_R2_001.fastq.gz"
+		output: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq.gz", unpaired_R1 = "Sample_{sample}/{sample}_R1_unpaired.fastq.gz", unpaired_R2 = "Sample_{sample}/{sample}_R2_unpaired.fastq.gz", err = "Sample_{sample}/{sample}_run_trimmomatic.err", log = "Sample_{sample}/{sample}_run_trimmomatic.log"
+		params: batch = "-l nodes=1:ppn=8"
+		shell: "java -Xmx24g -jar {program.trimmomatic} PE -threads 8 -phred33  {input.R1} {input.R2} {output.R1} {output.unpaired_R1} {output.R2} {output.unpaired_R2} ILLUMINACLIP:{adapters}:2:36:10 LEADING:10 TRAILING:10 MAXINFO:50:0.97 MINLEN:20 2>{output.err} 1>{output.log}" 
+
+	rule ngsqc:
+		input: R1 = makefilebase + "{sample}_R1_001.fastq.gz", R2 = makefilebase + "{sample}_R2_001.fastq.gz"
+		output: log = "Sample_{sample}/{sample}_run_NGSQC.log", err = "Sample_{sample}/{sample}_run_NGSQC.err"
+		params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+		shell: "{program.IlluQC} -pe {input.R1} {input.R2} {program.NGSQC_ADAPTER} A -c 8 -onlyStat -o {params.prefix} 1>{output.log} 2>{output.err}"
+
+	rule fastqc:
+		input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq.gz"
+		output: forward = "Sample_{sample}/{sample}_R1_trimmed_fastqc.html", reverse = "Sample_{sample}/{sample}_R2_trimmed_fastqc.html", logname = "Sample_{sample}/{sample}_run_fastqc.err"
+		params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+        	shell:  "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input.R1} {input.R2} 2>{output.logname}"
+
+	rule fastqc1:
+		input: R1 = makefilebase + "{sample}_R1_001.fastq.gz", R2 = makefilebase + "{sample}_R2_001.fastq.gz"
+		output: forward = "Sample_{sample}/{sample}_R1_001_fastqc.html", reverse = "Sample_{sample}/{sample}_R2_001_fastqc.html", err = "Sample_{sample}/{sample}_run_raw_fastqc.err", log = "Sample_{sample}/{sample}_run_raw_fastqc.log"
+		params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+		shell: "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input.R1} {input.R2} 2>{output.err} 1>{output.log}"
+
+	rule fastqscreen: 
+		input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq.gz"
+		output: one = "Sample_{sample}/{sample}_R1_trimmed_screen.png", two = "Sample_{sample}/{sample}_R2_trimmed_screen.png", logname = "Sample_{sample}/{sample}_fastq_screen.err"
+		params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/"
+		shell: "module load bowtie2; module load fastq_screen; {program.fastq_screen} --outdir {params.prefix} --threads 8 --nohits --conf {program.conf} --aligner bowtie2 {input.R1} {input.R2} 2>{output.logname}"
+
+	rule seqtk:
+		input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq.gz"
+		output: R1 = "Sample_{sample}/{sample}_R1_trimmed.sub.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.sub.fastq"
+		params: batch = "-l nodes=1:ppn=8"
+		shell: "module load seqtk; seqtk sample -s100 {input.R1} 1000000 >{output.R1} && seqtk sample -s100 {input.R2} 1000000 >{output.R2}"
+	
+	rule kraken:
+		input: R1 = "Sample_{sample}/{sample}_R1_trimmed.sub.fastq", R2 = "Sample_{sample}/{sample}_R2_trimmed.sub.fastq", 
+		output: err = "Sample_{sample}/kraken.err", result = "Sample_{sample}/{sample}.kraken", krona = "Sample_{sample}/{sample}.kraken.krona"
+		params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/{sample}.kraken"
+		shell: "{program.kraken} --fastq-input --threads 8 --db {program.krakendb} --output {params.prefix} --paired {input.R1} {input.R2} 2> {output.err} && cut -f2,3 {output.result} > {output.krona}"
+
+	rule bowtie2:
+		input: R1 = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", R2 = "Sample_{sample}/{sample}_R2_trimmed.fastq.gz"
+		output: err = "Sample_{sample}/{sample}_bowtie2.err", final = "Sample_{sample}/{sample}.bam"
+		params:  batch = "-l nodes=1:ppn=8,mem=24gb"
+		shell: "module load samtools; module load bowtie2; bowtie2 -p 8 -x {reference.refgen} -1 {input.R1} -2 {input.R2} 2>{output.err} | samtools view -bS - > {output.final}" 
+
+if config.paired == "1":
+
+	rule trimmo:
+		input: makefilebase + "{sample}_R1_001.fastq.gz"
+                output: out = "Sample_{sample}/{sample}_R1_trimmed.fastq.gz", err = "Sample_{sample}/{sample}_run_trimmomatic.err", log = "Sample_{sample}/{sample}_run_trimmomatic.log"
+                params: batch = "-l nodes=1:ppn=8:sndy"
+                shell: "java -Xmx24g -jar {program.trimmomatic} SE -threads 8 -phred33  {input} {output.out} ILLUMINACLIP:{program.adapters}:2:36:10 LEADING:10 TRAILING:10 MAXINFO:50:0.97 MINLEN:20 2>{output.err} 1>{output.log}"
+
+	rule ngsqc:
+                input:  makefilebase + "{sample}_R1_001.fastq.gz"
+                output: log = "Sample_{sample}/{sample}_run_NGSQC.log", err = "Sample_{sample}/{sample}_run_NGSQC.err"
+                params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}"
+                shell: "{program.IlluQC} -se {input} {program.NGSQC_ADAPTER} A -c 8 -onlyStat -o {params.prefix} 1>{output.log} 2>{output.err}"
+
+	rule fastqc:
+                input:  "Sample_{sample}/{sample}_R1_trimmed.fastq.gz"
+                output: out = "Sample_{sample}/{sample}_R1_trimmed_fastqc.html", logname = "Sample_{sample}/{sample}_run_fastqc.err"
+                params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}"
+                shell:  "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input} 2>{output.logname}"
+
+	rule fastqc1:
+                input:  makefilebase + "{sample}_R1_001.fastq.gz"
+                output: forward = "Sample_{sample}/{sample}_R1_001_fastqc.html", err = "Sample_{sample}/{sample}_run_raw_fastqc.err", log = "Sample_{sample}/{sample}_run_raw_fastqc.log"
+                params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}"
+                shell: "{program.fastQC} -o {params.prefix} --noextract -k 5 -t 8 -f fastq {input} 2>{output.err} 1>{output.log}"
+
+	rule fastqscreen:
+                input: "Sample_{sample}/{sample}_R1_trimmed.fastq.gz"
+                output: one = "Sample_{sample}/{sample}_R1_trimmed_screen.png", logname = "Sample_{sample}/{sample}_fastq_screen.err"
+                params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}"
+                shell: "module load bowtie2; module load fastq_screen; {program.fastq_screen} --outdir {params.prefix} --threads 8 --nohits --conf {program.conf} --aligner bowtie2 {input} 2>{output.logname}"
+
+	rule bowtie2:
+                input: "Sample_{sample}/{sample}_R1_trimmed.fastq.gz"
+                output: err = "Sample_{sample}/{sample}_bowtie2.err", final = "Sample_{sample}/{sample}.bam"
+                #modified by shent2 07/30/2018
+                #removed --un to make parameters concistent between paired-end and single-end pipelines
+                #params:  batch = "-l nodes=1:ppn=8,mem=24gb", prefix = "Sample_{sample}/{sample}_unpaired"
+                #shell: "module load samtools; module load bowtie2; bowtie2 -p 8 -x {refgen} -U {input} --un {params.prefix} 2>{output.err} | samtools view -bS - > {output.final}"
+                params:  batch = "-l nodes=1:ppn=8,mem=24gb"
+                shell: "module load samtools; module load bowtie2; bowtie2 -p 8 -x {reference.refgen} -U {input} 2>{output.err} | samtools view -bS - > {output.final}"
+
+	rule seqtk:
+                input: "Sample_{sample}/{sample}_R1_trimmed.fastq.gz"
+                output: "Sample_{sample}/{sample}_R1_trimmed.sub.fastq"
+                params: batch = "-l nodes=1:ppn=8"
+                shell: "module load seqtk; seqtk sample -s100 {input} 1000000 >{output}"
+
+	rule kraken:
+                input: "Sample_{sample}/{sample}_R1_trimmed.sub.fastq"
+                output: err = "Sample_{sample}/kraken.err", result = "Sample_{sample}/{sample}.kraken", krona = "Sample_{sample}/{sample}.kraken.krona"
+                params: batch = "-l nodes=1:ppn=8", prefix = "Sample_{sample}/{sample}.kraken"
+                shell: "{program.kraken} --fastq-input --threads 8 --db {program.krakendb} --output {params.prefix} {input} 2> {output.err} && cut -f2,3 {output.result} > {output.krona}"
+
+
+######################THIS STARTS COMMON STEPS###########################	
+rule krona:
+	input: "Sample_{sample}/{sample}.kraken.krona"
+	output: out = "Sample_{sample}/{sample}.kraken.krona.html"
+	params: batch = "-l nodes=1:ppn=8"
+	shell: "{program.krona} {input} -c -o {output.out}"
+
+rule sort:
+	input: bam = "Sample_{sample}/{sample}.bam"
+	output: sort = "Sample_{sample}/{sample}.bam.sorted.bam", log = "Sample_{sample}/{sample}.samtools_index.log"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "module load samtools; samtools sort {input} -o {output.sort} 2>{output.log}"
+
+rule index: 
+	input: "Sample_{sample}/{sample}.bam.sorted.bam"
+	output: "Sample_{sample}/{sample}.bam.sorted.bam.bai", log = "Sample_{sample}/{sample}.samtools_index.log"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "module load samtools; samtools index {input} 2>{output.log}"
+
+rule bamstats:
+	input: "Sample_{sample}/{sample}.bam.sorted.bam"
+	output: err = "Sample_{sample}/{sample}_bamtools_stats.err", log = "Sample_{sample}/{sample}_bamtools_stats.log"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "module load bamtools; bamtools stats -in {input} 1>{output.err} 2>{output.log}"
+
+rule markdup:
+	input: "Sample_{sample}/{sample}.bam.sorted.bam"
+	output: out = "Sample_{sample}/{sample}.bam.sorted.markedup.bam", metric = "Sample_{sample}/{sample}_MARKEDUPmetrics.txt", log = "Sample_{sample}/Markedup.log", err = "Sample_{sample}/Markdup.err"
+	params: batch = "-l nodes=1:ppn=8,mem=24gb"
+	shell: "java -Xmx64g -jar {program.markedup} INPUT={input} OUTPUT={output.out} METRICS_FILE={output.metric} ASSUME_SORTED=true MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=1000 VALIDATION_STRINGENCY=LENIENT TMP_DIR=./ 2>{output.log} 1>{output.err}"
+
+rule multiqc: 
+	input: expand("Sample_{sample}/{sample}.bam.sorted.markedup.bam", sample=samples), expand("Sample_{sample}/{sample}.kraken.krona.html", sample=samples), expand("Sample_{sample}/{sample}_R1_trimmed_screen.png", sample=samples)
+	params: batch = "-l nodes=1:ppn=1"
+	output: "multiqc_report.html"
+	shell: "module load multiqc; multiqc ./ -f"
+
+rule report:
+	input: expand("Sample_{sample}/{sample}.bam.sorted.markedup.bam", sample=samples), "multiqc_report.html", expand("Sample_{sample}/{sample}_MARKEDUPmetrics.txt", sample=samples)
+	output: report_result
+	params: batch = "-l nodes=1:ppn=1"
+	shell: "cd {one_up}; perl /is2/projects/CCR-SF/active/Software/scripts/bin/run_GenerateAllReports.pl -p {pi_name}+{date}+{csas} -s 2 -u {unaligned} -f {run_name} -d {analysis} -r 1 -e {paired} -m 1 -t 1 -x verajc:test1"
+
+rule wreport:
+	input: report_result
+	output: wreport_result
+	params: batch = "-l nodes=1:ppn=1"
+	shell: "cd {one_up}; /is2/projects/CCR-SF/active/Software/scripts/bin/run_wordreport.py {input}"
